@@ -1,0 +1,419 @@
+#!/bin/bash
+
+help_doc () {
+    cat << help_doc
+
+gnome-night-light-color-temperature
+幫助設定夜間模式色溫的小工具
+
+用法：
+gnome-night-light-color-temperature [--get]
+gnome-night-light-color-temperature --list-recommands|--help|--list-user-configs
+gnome-night-light-color-temperature --set <config-name>|<value>
+
+--get                預設沒有選項時，取得當前色溫 目前為 $( remove_prefix_uint "$old_setting" )
+--help               印出本說明
+--list-recommands	 列出建議色溫配置
+--list-user-configs  列出目前 *自訂值
+    --list-user-configs=name|value|desc 可選擇以下列選項排序：
+                        name  設定名稱
+                        value 設定值（色溫值）（預設值）
+                        desc  設定描述
+--set <config-name>  以自訂值 設定色溫值，目前 $( print_user_config_raws_keys )
+--set <value>        以「數值」設定色溫值，可用範圍: 1000 - 10000
+--loop-subshell      subshell 模式 （包含查詢等完整功能）
+--loop-setting       循環設定模式 （快速簡易設定模式）
+
+*要增訂自訂列表，請在本 script 「=== 使用者設定值 ===」 區塊內，增加設定值
+ 用法： set_user_config \$name \$value \$desc
+help_doc
+}
+
+list_recommands () {
+    cat << recommands
+
+建議色溫配置
+ 數值 - 說明
+`printf "%5d" $min_temperature` - 可接受最低值 (super warm/red)
+`printf "%5d" $(get_system_default_value)` - 系統預設夜間光線色溫
+ 5500 - 平衡色溫
+`printf "%5d" $(get_system_default_off_value)` - 系統預設 "停用夜間光線" 時的色溫
+`printf "%5d" $max_temperature` - 可接受最高值 (super cool/blue)
+
+參考資料：
+https://www.omgubuntu.co.uk/2017/07/adjust-color-temperature-gnome-night-light
+recommands
+}
+
+temperature_schema_key_warning () {
+    if [[ -z $1 ]]; then
+        local warning=`gsettings get $schema_path $key_of_schema 2>&1`;
+        echo "警告！" >&2;
+        if [[ $warning =~ $schema_path ]]; then
+            echo "gnome 夜光基模(schema_path)改變 不再為 $schema_path" >&2;
+            exit 9;
+        elif [[ $warning =~ $key_of_schema ]]; then
+            echo "gnome 夜光設定鍵(key)改變 不再為 $key_of_schema" >&2;
+            exit 10;
+        fi
+        echo "遭遇未預期的錯誤 @ temperature_schema_key_warning" >&2;
+        exit 11;
+    fi
+}
+
+setting_temperature () {
+
+    local _exit_code=0;
+    if [[ -z $1 ]]; then
+        echo "請輸入 $min_temperature ～ $max_temperature 的數字或下列清單：" 1>&2;
+        echo "$(print_user_config_raws_keys)" 1>&2;
+        _exit_code=16;
+    elif [[ $1 =~ ^[0-9]+$ ]]; then
+        if (( $1 >= $min_temperature )) && (( $1 <= $max_temperature )); then
+            gsettings set $schema_path $key_of_schema $1;
+        else
+            echo "給的值超出範圍，請輸入 $min_temperature ～ $max_temperature 的值" 1>&2;
+            _exit_code=17;
+        fi
+    else
+        read name value desc < <(query_key_mapping_by 'name' "$1");
+        if [[ -n $name ]]; then
+            gsettings set $schema_path $key_of_schema $value;
+        else
+            echo "請檢查有無拼字錯誤，目前 $( print_user_config_raws_keys )" 1>&2;
+            echo "或者增加新的設定 mapping： $1" 1>&2;
+            echo "增加方法請見 --help" 1>&2;
+            _exit_code=18;
+        fi
+    fi
+    (( $_exit_code )) && [[ -z $2 ]] && ( exit $_exit_code; );
+
+    get_setting "$( get_setting_from_gsettings )" 1>&2;
+    echo "設定成功" 1>&2;
+}
+
+# --loop-setting
+loop_setting () {
+    while (( 1 )); do
+        read -rep "幫助(h) 離開(q) > " fn args;
+        case $fn in
+            'l' | 'ls') list_user_configs; ;;
+            's' | 'set') setting_temperature $args 'subshell'; ;;
+            'g' | 'get') get_setting "$( get_setting_from_gsettings )"; ;;
+            'Q' | 'q' | 'quit' ) exit 0; ;;
+            'h' | 'help') loop_setting_help; ;;
+        esac
+    done
+}
+
+loop_setting_help () {
+    cat << loop_setting
+快速設定說明：
+       g,    get    取得當前色溫 目前為 $( remove_prefix_uint "$( get_setting_from_gsettings )" )
+       l,    ls     列出目前「自訂值」，以設定值大小排序
+       h,    help   印出本說明
+       q, Q, quit   離開
+        s <value>  以「數值」設定色溫值，可用範圍: 1000 - 10000
+      set <value>
+  s <config-name>   以「自訂值」設定色溫值
+                    目前 $( print_user_config_raws_keys )
+set <config-name>
+loop_setting
+}
+
+# --loop-subshell
+loop_subshell () {
+    while (( 1 )); do
+        read -rep "幫助(h) 離開(q) > " fn args value;
+        case $fn in
+            'Q' | 'q' | 'quit' | 'exit') exit 0; ;;
+            'get')
+                get_setting "$( get_setting_from_gsettings )"; ;;
+            'list-recommands' | 'ls-remd')
+                list_recommands; ;;
+            'list-user-configs' | 'ls-configs')
+                sub=$( grep "^\(name\|value\|desc\)$" <<< $args );
+                list_user_configs ${sub:-'value'};
+            ;;
+            'query-user-configs' | 'q-configs')
+                if [[ -n "$args" ]] && [[ -n "$value" ]]; then
+                    ans=$(query_key_mapping_by "$args" "$value");
+                    if [[ -n $ans ]]; then
+                        list_table_title;
+                        printf "$ans\n";
+                    fi
+                else
+                    echo "請輸入 選項 與 查詢值"
+                fi
+            ;;
+            'set')
+                setting_temperature $args 'subshell';
+            ;;
+            'h' | 'help') loop_help; ;;
+        esac
+    done
+}
+
+loop_help () {
+cat << loop_help
+                                     get   取得當前色溫 目前為 $( remove_prefix_uint "$( get_setting_from_gsettings )" )
+                                 help, h   印出本說明
+                           quit, q, exit   離開
+                list-recommands, ls-remd   列出建議色溫配置
+           list-user-configs, ls-configs   列出目前 *自訂值
+
+       list-user-configs name|value|desc   列出目前 *自訂值，並以該欄位排序**
+              ls-configs name|value|desc
+
+query-user-configs name|value|desc 查詢值   以特定欄位值，查詢包含該目前自訂值的詳細資料**
+         q-configs name|value|desc 查詢值
+
+                             set <value>   以「數值」設定色溫值，可用範圍: 1000 - 10000
+                       set <config-name>   以「自訂值」設定色溫值
+                                           目前 $( print_user_config_raws_keys )
+
+*要增訂自訂列表，請在本 script 「=== 使用者設定值 ===」 區塊內，增加設定值
+ 用法： set_user_config \$name \$value \$desc
+
+** list-user-configs 、 query-user-configs 選項說明
+    設定名稱  name
+    設定值　 value （預設值）
+    設定描述  desc
+loop_help
+}
+
+get_user_config_raws_keys () { cat <<< "${!user_config[*]}"; }
+get_user_config_raws_values () { cat <<< "${user_config[*]}"; }
+print_user_config_raws_keys () {
+    cat <<< "可用名稱有: $( get_user_config_raws_keys | tr " " "," )";
+}
+
+list_user_configs_sort_by () {
+    local format=" %8d;list_user_configs_sort_by;%s\n";
+    case $1 in
+        'name' | 'desc' ) format=" %s;list_user_configs_sort_by;%s\n"; ;;
+        'value'| * ) ;; # format=$format; ;;
+    esac
+
+    local key;
+    local val;
+    for key in $(get_user_config_raws_keys); do
+        for val in $(get_user_config $key); do
+            if [[ $val =~ ^${1}\= ]]; then
+                printf $format ${val##${1}=} $key;
+            fi
+        done
+    done | sort
+}
+
+list_user_configs_sorted_key_by () {
+    sortedStrings=$(list_user_configs_sort_by $1);
+    for VAR in $sortedStrings; do
+        sed 's/.*;list_user_configs_sort_by;//' <<< $VAR
+    done
+}
+
+list_one_config_by_key () {
+    local name='';
+    local value='';
+    local desc='';
+    for val in $(get_user_config $1); do
+        _var_name_=$( sed 's/^\(name\|value\|desc\).*$/\1=/' <<< $val);
+        _var_val_=$(spilt_key_value_pair $val);
+        eval "$_var_name_'$_var_val_'";
+    done
+    printf " %+16s % 7d  %s\n" $name $value "$desc";
+}
+
+list_table_title () {
+    echo "      設 定 名 稱  設定值  敘述內容";
+    echo " ---------------- -------- ----------------";
+}
+
+list_user_configs () {
+    local sort_by=${1:-'value'};
+    list_table_title;
+    local key;
+    for key in $(list_user_configs_sorted_key_by $sort_by); do
+        list_one_config_by_key $key;
+    done
+}
+
+set_user_config () {
+    _name=$1;
+    _value=$2;
+    shift 2;
+    _description=`sed 's/ /__space__/g' <<< "$@"`;
+    user_config[$_name]="name=$_name;#user_config#;value=$_value;#user_config#;desc=$_description";
+}
+
+get_user_config () {
+    removed_config_spread_mark ${user_config[$1]};
+}
+
+removed_config_spread_mark () {
+    replace ';#user_config#;' ' ' <<< $1;
+}
+
+spilt_key_value_pair () {
+    val=$1;
+    case $val in
+        name=*  ) echo ${val##name=}  ;;
+        value=* ) echo ${val##value=} ;;
+        desc=*  ) echo "$(replace __space__ ' ' <<< ${val##desc=})" ;;
+    esac
+}
+
+test_for_value () {
+    value=$1;
+    val=$2;
+    echo $(( $1 == $( spilt_key_value_pair $2 ) ? 1 : 0 ));
+}
+
+test_for_desc () {
+    value=$1;
+    val=$2;
+    [[ $( spilt_key_value_pair $2 ) =~ $1 ]] && ( echo 1; ) || ( echo 0; );
+}
+
+remove_prefix_uint () {
+    sed 's/[^ ]* //' <<<"$1"
+}
+
+query_key_mapping_by () {
+    local field=$1;
+    local value=$2;
+    local test_fn='';
+    local key='';
+    local errormsg=''
+
+    if [[ 'name' == $field  ]]; then
+        [[ -n ${user_config[$value]} ]] && \
+            ( list_one_config_by_key $value; ) || \
+            ( echo '沒有這樣的 設定名稱' $value 1>&2; );
+    elif [[ 'value' == $field  ]]; then
+        value=$( remove_prefix_uint "$value" );
+        test_fn='test_for_value';
+        errormsg='沒有儲存以「 %s 」為值的設定';
+    elif [[ 'desc' == $field  ]]; then
+        test_fn='test_for_desc';
+        errormsg='沒有像「 %s 」這樣的敘述內容，也許是因為精準比對，請減少用字後嘗試';
+    fi
+
+    if [[ 'value' == $field ]] || [[ 'desc' == $field ]]; then
+        for var in $(get_user_config_raws_values); do
+            for val in $(removed_config_spread_mark $var); do
+                if [[ $val =~ ^$field\= ]] && \
+                    (( $( $test_fn $value $val ) )); then
+                    key=$(spilt_key_value_pair $(removed_config_spread_mark $var));
+                    list_one_config_by_key $key
+                fi
+            done
+        done
+    fi
+
+    if [[ -z $key ]]; then
+        printf "$errormsg\n" $value 1>&2;
+    fi
+
+    unset field;
+    unset value;
+    unset test_fn;
+    unset key;
+    unset errormsg;
+}
+
+get_setting () {
+    list_table_title
+    ans=$(query_key_mapping_by 'value' "$1");
+    printf "$ans\t(此為當前設定值)\n";
+}
+
+get_setting_from_gsettings () {
+    gsettings get $schema_path $key_of_schema 2> /dev/null;
+}
+
+# === 全域設定值 === START
+
+get_system_default_value () { cat <<<'4000'; }
+get_system_default_off_value () { cat <<<'6500'; }
+declare -A user_config;
+set_user_config 'system-default' `get_system_default_value` '系統預設夜間光線色溫';
+set_user_config 'system-off'     `get_system_default_off_value` '系統預設 "停用夜間光線"';
+
+max_temperature=10000;
+min_temperature=1000;
+schema_path='org.gnome.settings-daemon.plugins.color';
+key_of_schema='night-light-temperature';
+old_setting="`get_setting_from_gsettings`";
+
+# === 全域設定值 === END
+
+temperature_schema_key_warning "$old_setting";
+
+# === 使用者設定值 === START
+set_user_config 'leisure'   5000 '休閒';
+set_user_config 'work_tv'   5500 '接電視工作';
+set_user_config 'work_28'   5300 '接m2870v工作';
+# === 使用者設定值 === END
+
+if [[ $# -eq 0 ]]; then
+    get_setting "$old_setting";
+    exit 0;
+fi
+
+real_command='';
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        '--get')
+            get_setting "$old_setting";
+            exit 0;
+        ;;
+        '--help')
+            help_doc;
+            exit 0;
+        ;;
+        '--list-recommands')
+            if [[ -z $real_command ]]; then
+                real_command='list_recommands';
+            fi
+            shift 1;
+        ;;
+        '--list-user-configs'*)
+            if [[ -z $real_command ]]; then
+                sub=$( sed 's/^.*=\(name\|value\|desc\)$/\1/' <<< $1 )
+                real_command="list_user_configs $sub";
+            fi
+            shift 1;
+        ;;
+        '--set')
+            if [[ -z $real_command ]]; then
+                real_command="setting_temperature $2";
+            fi
+            shift 2;
+        ;;
+        '--loop-subshell')
+            if [[ -z $real_command ]]; then
+                real_command="loop_subshell";
+            fi
+            shift 1;
+        ;;
+        '--loop-setting')
+            if [[ -z $real_command ]]; then
+                real_command="loop_setting";
+            fi
+            shift 1;
+        ;;
+        *)
+            echo "未知的選項 $1" 1>&2;
+            help_doc 1>&2;
+            exit 12;
+        ;;
+    esac
+done
+
+if [[ -n "$real_command" ]]; then
+    eval "$real_command";
+fi
+
+exit 0
