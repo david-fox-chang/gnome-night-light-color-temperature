@@ -32,7 +32,7 @@ chmod u+x gnome-night-light-color-temperature;
 > 設定色溫為 自訂定義設定值
 
 ```bash
-./gnome-night-light-color-temperature --set <some comsumer config name>
+./gnome-night-light-color-temperature --set <some customer config name>
 
 # 範例，work_tv是我接電視工作所使用的設定檔
 ./gnome-night-light-color-temperature --set 'work_tv'
